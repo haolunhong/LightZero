@@ -186,6 +186,31 @@ class MCTS(object):
 
         self.simulate_env = simulate_env
 
+    def get_next_actions_batch(
+            self, state_configs, policy_forward_fn_batch,
+            temperature=1.0, sample=True, env_list=None
+    ):
+        """Serial compatibility adapter; NOT true GPU batched MCTS."""
+        if env_list is None or len(env_list) != len(state_configs):
+            raise ValueError("state_configs and env_list must have the same length")
+
+        results = []
+        original_env = self.simulate_env
+        try:
+            for config, env in zip(state_configs, env_list):
+                self.simulate_env = env
+                result = self.get_next_action(
+                    config,
+                    lambda single_env: policy_forward_fn_batch([single_env])[0],
+                    temperature,
+                    sample
+                )
+                results.append(result)
+        finally:
+            self.simulate_env = original_env
+
+        return results
+
     def get_next_action(
             self,
             state_config_for_simulate_env_reset: Dict[str, Any],
