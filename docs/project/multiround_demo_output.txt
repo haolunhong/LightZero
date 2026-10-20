@@ -1,0 +1,17 @@
+pygame-ce 2.5.8 (SDL 2.32.10, Python 3.10.22)
+Queued leaves: 4
+GPU: NVIDIA GeForce RTX 5070
+Forward batch sizes: [1, 4]
+Root visit count: 4
+Expanded leaves: 4
+SUCCESS: Real GPU batch evaluation and MCTS backpropagation!
+
+=== MULTI-ROUND BATCHED MCTS ===
+Environment: Connect4
+Simulations: 12
+Batch size: 4
+Selected action: 1
+Action probabilities: [0.16666667 0.41666667 0.08333333 0.08333333 0.08333333 0.08333333
+ 0.08333333]
+GPU forward batch sizes: [1, 4, 4, 4]
+SUCCESS: Real multi-round GPU Batched MCTS!
