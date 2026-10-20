@@ -70,7 +70,6 @@ def test_revert_virtual_loss():
     assert leaf.visit_count == 1
     assert leaf.value == pytest.approx(0.5)
     assert leaf._value_sum == pytest.approx(0.5)
-    
 
 
 def test_shared_nodes():

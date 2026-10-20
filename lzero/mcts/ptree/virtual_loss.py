@@ -60,7 +60,7 @@ class VirtualLossManager:
         
         del self._active_tokens[id(token)]
 
-    @contextmanager
+    #@contextmanager
     def context(self, search_path, loss=1.0):
         """Always revert virtual loss when the block exits."""
         token = self.apply(search_path, loss)
