@@ -431,28 +431,25 @@ class MCTS(object):
 
         return action, child
 
-    def _expand_leaf_node(self, node: Node, simulate_env: Type[BaseEnv], policy_forward_fn: Callable) -> float:
-        """
-        Overview:
-            expand the node with the policy_forward_fn.
-        Arguments:
-            - node (:obj:`Class Node`): current node when performing mcts search.
-            - simulate_env (:obj:`Class BaseGameEnv`): the class of simulate env.
-            - policy_forward_fn (:obj:`Function`): the Callable to compute the action probs and state value.
-        Returns:
-            - leaf_value (:obj:`Bool`): the leaf node's value.
-        """
-        # Call the policy_forward_fn function to compute the action probabilities and state value, and return a
-        # dictionary and the value of the leaf node.
+    def _expand_leaf_node(
+            self, node: Node, simulate_env: Type[BaseEnv],
+            policy_forward_fn: Callable
+    ) -> float:
+        """Evaluate one leaf and expand it (serial baseline)."""
         action_probs_dict, leaf_value = policy_forward_fn(simulate_env)
+        return self._expand_leaf_from_result(
+            node, simulate_env, action_probs_dict, leaf_value
+        )
 
-        # Traverse the action probability dictionary.
+    def _expand_leaf_from_result(
+            self, node: Node, simulate_env: Type[BaseEnv],
+            action_probs_dict: Dict[int, float],
+            leaf_value: float
+    ) -> float:
+        """Expand a leaf using an already computed policy-value result."""
         for action, prior_p in action_probs_dict.items():
-            # If the action is in the legal action list of the current environment, add the action as a child node of
-            # the current node.
             if action in simulate_env.legal_actions:
                 node.children[action] = Node(parent=node, prior_p=prior_p)
-        # Return the value of the leaf node.
         return leaf_value
 
     def _ucb_score(self, parent: Node, child: Node) -> float:
