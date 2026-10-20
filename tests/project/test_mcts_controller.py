@@ -34,17 +34,41 @@ def test_batch_size_one_uses_serial_mcts():
     assert probs[3] == 1
 
 
-def test_batch_size_sixteen_not_implemented():
-    """Batch size greater than 1 is not implemented yet."""
+def test_batch_size_sixteen_runs_real_search():
+    """Batch size 16 can run a real Connect4 MCTS search."""
+    import numpy as np
+    from easydict import EasyDict
+    from zoo.board_games.connect4.envs.connect4_env import Connect4Env
 
-    mcts = object.__new__(MCTS)
+    env = Connect4Env(Connect4Env.default_config())
+    env.reset()
 
-    with pytest.raises(NotImplementedError):
-        mcts.get_next_action_batched(
-            {},
-            lambda env_list: [],
-            batch_size=16
-        )
+    mcts = MCTS(EasyDict(num_simulations=4), env)
+    batch_calls = []
+
+    def fake_batch_policy(env_list):
+        batch_calls.append(len(env_list))
+        return [
+            (
+                {a: 1.0 / len(e.legal_actions)
+                 for a in e.legal_actions},
+                0.0
+            )
+            for e in env_list
+        ]
+
+    action, probs = mcts.get_next_action_batched(
+        {"start_player_index": 0, "init_state": None},
+        fake_batch_policy,
+        batch_size=16,
+        temperature=1.0,
+        sample=False,
+    )
+
+    assert action in range(7)
+    assert len(probs) == 7
+    assert np.isclose(probs.sum(), 1.0)
+    assert batch_calls == [1, 4]
 
 
 def test_invalid_batch_size():

@@ -211,6 +211,80 @@ class MCTS(object):
 
         return results
 
+    def _evaluate_queued_leaves(
+            self, queue, policy_forward_fn_batch, batch_size
+    ):
+        """
+        Evaluate queued leaf environments in one batch.
+
+        Framework-stage helper:
+        - Pop LeafTask objects from LeafQueue.
+        - Evaluate their environment snapshots together.
+        - Return matching (LeafTask, evaluation) pairs.
+
+        Tree expansion, backpropagation, pending-task tracking,
+        and error recovery are not handled here yet.
+        """
+        if batch_size < 1:
+            raise ValueError("batch_size must be >= 1")
+
+        tasks = queue.pop_batch(batch_size)
+
+        if not tasks:
+            return []
+
+        env_list = [task.env_snapshot for task in tasks]
+        results = policy_forward_fn_batch(env_list)
+
+        if len(results) != len(tasks):
+            raise RuntimeError(
+                "Batch evaluation result count does not match task count"
+            )
+
+        return list(zip(tasks, results))
+
+    def _select_leaf_for_batch(
+            self, root, state_config, pending_node_ids=None
+    ):
+        """Select a real leaf from one shared MCTS tree."""
+        if pending_node_ids is None:
+            pending_node_ids = set()
+
+        env = copy.deepcopy(self.simulate_env)
+        env.reset(
+            start_player_index=state_config.get("start_player_index", 0),
+            init_state=state_config.get("init_state", None),
+        )
+        env.battle_mode = env.battle_mode_in_simulation_env
+        env.render_mode = None
+
+        def search(node, current_env, path):
+            if node.is_leaf():
+                if id(node) in pending_node_ids:
+                    return None
+                done = current_env.get_done_winner()[0]
+                return node, current_env, path, bool(done)
+
+            candidates = [
+                (self._ucb_score(node, child), action, child)
+                for action, child in node.children.items()
+                if action in current_env.legal_actions
+            ]
+            candidates.sort(key=lambda item: item[0], reverse=True)
+
+            for _, action, child in candidates:
+                next_env = copy.deepcopy(current_env)
+                next_env.step(action)
+                result = search(
+                    child, next_env, path + (child,)
+                )
+                if result is not None:
+                    return result
+
+            return None
+
+        return search(root, env, (root,))
+
     def get_next_action_batched(
             self,
             state_config,
@@ -219,33 +293,147 @@ class MCTS(object):
             temperature=1.0,
             sample=True
     ):
-        """
-        Single-tree batched MCTS controller.
+        """Single-tree batched MCTS for Connect4 self-play."""
+        from lzero.mcts.ptree.leaf_queue import LeafQueue, LeafTask
 
-        Framework stage:
-        - Batch size 1 uses the existing serial MCTS.
-        - Batch size > 1 will be implemented with LeafQueue
-          and Virtual Loss in the next development stage.
-
-        This method is NOT yet GPU batched MCTS.
-        """
         if batch_size < 1:
             raise ValueError("batch_size must be >= 1")
 
         if batch_size == 1:
-            def single_policy_fn(env):
-                return policy_forward_fn_batch([env])[0]
-
             return self.get_next_action(
                 state_config,
-                single_policy_fn,
+                lambda env: policy_forward_fn_batch([env])[0],
                 temperature,
                 sample
             )
 
-        raise NotImplementedError(
-            "Batched MCTS requires LeafQueue and Virtual Loss integration"
+        if self.simulate_env.battle_mode_in_simulation_env != 'self_play_mode':
+            raise NotImplementedError(
+                "Batched controller currently supports self-play only"
+            )
+
+        if self._num_simulations < 1:
+            raise ValueError("num_simulations must be positive")
+
+        root = Node()
+        self.simulate_env.reset(
+            start_player_index=state_config.get('start_player_index', 0),
+            init_state=state_config.get('init_state', None),
         )
+
+        # Expand the root using one network evaluation.
+        initial_result = policy_forward_fn_batch([self.simulate_env])
+        if len(initial_result) != 1:
+            raise RuntimeError("Root evaluation must return one result")
+
+        policy, value = initial_result[0]
+        self._expand_leaf_from_result(
+            root, self.simulate_env, policy, value
+        )
+
+        if sample:
+            self._add_exploration_noise(root)
+
+        completed = 0
+
+        while completed < self._num_simulations:
+            capacity = min(
+                batch_size, self._num_simulations - completed
+            )
+            queue = LeafQueue(max_size=capacity)
+            pending = set()
+            terminal_tasks = []
+
+            # Select distinct leaves from the SAME search tree.
+            for _ in range(capacity):
+                selected = self._select_leaf_for_batch(
+                    root, state_config, pending
+                )
+
+                if selected is None:
+                    break
+
+                node, leaf_env, path, done = selected
+                pending.add(id(node))
+
+                if done:
+                    terminal_tasks.append((node, leaf_env))
+                else:
+                    task = LeafTask(
+                        completed + len(pending),
+                        node, leaf_env, path
+                    )
+                    if not queue.add(task):
+                        raise RuntimeError(
+                            "Failed to enqueue selected leaf"
+                        )
+
+            if queue.is_empty() and not terminal_tasks:
+                raise RuntimeError(
+                    "No searchable leaf found; search cannot continue"
+                )
+
+            # Terminal leaves do not require GPU inference.
+            for node, leaf_env in terminal_tasks:
+                result = leaf_env.get_done_winner()
+                done, winner = result[:2]
+                assert done
+
+                if winner == -1:
+                    leaf_value = 0.0
+                else:
+                    leaf_value = (
+                        1.0 if leaf_env.current_player == winner
+                        else -1.0
+                    )
+
+                node.update_recursive(-leaf_value, negate=True)
+                completed += 1
+
+            # Evaluate nonterminal leaves together on the GPU.
+            if not queue.is_empty():
+                batch_results = self._evaluate_queued_leaves(
+                    queue, policy_forward_fn_batch, batch_size
+                )
+
+                for task, (policy, leaf_value) in batch_results:
+                    self._expand_leaf_from_result(
+                        task.node,
+                        task.env_snapshot,
+                        policy,
+                        leaf_value
+                    )
+
+                    task.node.update_recursive(
+                        -leaf_value, negate=True
+                    )
+                    completed += 1
+
+        # Select the final action from root visit counts.
+        visits = np.array([
+            root.children[action].visit_count
+            if action in root.children else 0
+            for action in range(self.simulate_env.action_space.n)
+        ], dtype=np.float64)
+
+        if visits.sum() == 0:
+            raise RuntimeError("MCTS completed without root visits")
+
+        if temperature <= 0:
+            action_probs = np.zeros_like(visits)
+            action_probs[np.argmax(visits)] = 1.0
+        else:
+            weights = np.power(visits, 1.0 / temperature)
+            action_probs = weights / weights.sum()
+
+        if sample:
+            action = int(np.random.choice(
+                len(action_probs), p=action_probs
+            ))
+        else:
+            action = int(np.argmax(action_probs))
+
+        return action, action_probs
 
     def get_next_action(
             self,
