@@ -211,6 +211,42 @@ class MCTS(object):
 
         return results
 
+    def get_next_action_batched(
+            self,
+            state_config,
+            policy_forward_fn_batch,
+            batch_size=16,
+            temperature=1.0,
+            sample=True
+    ):
+        """
+        Single-tree batched MCTS controller.
+
+        Framework stage:
+        - Batch size 1 uses the existing serial MCTS.
+        - Batch size > 1 will be implemented with LeafQueue
+          and Virtual Loss in the next development stage.
+
+        This method is NOT yet GPU batched MCTS.
+        """
+        if batch_size < 1:
+            raise ValueError("batch_size must be >= 1")
+
+        if batch_size == 1:
+            def single_policy_fn(env):
+                return policy_forward_fn_batch([env])[0]
+
+            return self.get_next_action(
+                state_config,
+                single_policy_fn,
+                temperature,
+                sample
+            )
+
+        raise NotImplementedError(
+            "Batched MCTS requires LeafQueue and Virtual Loss integration"
+        )
+
     def get_next_action(
             self,
             state_config_for_simulate_env_reset: Dict[str, Any],
